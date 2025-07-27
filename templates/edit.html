@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plan bearbeiten - Messdienerplan</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .header-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .edit-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .table th {
+            background-color: #495057;
+            color: white;
+            border: none;
+        }
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        .btn-save {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            border: none;
+        }
+        .btn-save:hover {
+            background: linear-gradient(135deg, #218838 0%, #1ea085 100%);
+        }
+        .btn-add {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+        }
+        .btn-add:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+        }
+    </style>
+</head>
+<body>
+    <div class="header-bg py-4 mb-4">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col">
+                    <h1 class="mb-0"><i class="bi bi-pencil-square"></i> Plan bearbeiten</h1>
+                    <p class="mb-0 opacity-75">Messdienerplan verwalten und aktualisieren</p>
+                </div>
+                <div class="col-auto">
+                    <a href="{{ url_for('index') }}" class="btn btn-light me-2">
+                        <i class="bi bi-eye"></i> Vorschau
+                    </a>
+                    <a href="{{ url_for('logout') }}" class="btn btn-outline-light">
+                        <i class="bi bi-box-arrow-right"></i> Abmelden
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' if category == 'success' else 'info' }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="edit-card p-4">
+            <form method="POST" id="editForm">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h3><i class="bi bi-table"></i> Messdienerplan</h3>
+                    <div>
+                        <button type="submit" name="add_row" class="btn btn-add me-2">
+                            <i class="bi bi-plus"></i> Zeile hinzufügen
+                        </button>
+                        <button type="submit" name="save_plan" class="btn btn-save">
+                            <i class="bi bi-check-lg"></i> Plan speichern
+                        </button>
+                    </div>
+                </div>
+
+                {% if plan and plan|length > 0 %}
+                    <div class="table-responsive">
+                        <table class="table table-bordered">
+                            <thead>
+                                <tr>
+                                    {% for header in plan[0] %}
+                                        <th>{{ header }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in plan[1:] %}
+                                    <tr>
+                                        <td style="width: 200px;">
+                                            <input type="text"
+                                                   class="form-control"
+                                                   name="datum_{{ loop.index }}"
+                                                   value="{{ row[0] if row|length > 0 else '' }}"
+                                                   placeholder="TT.MM.YYYY">
+                                        </td>
+                                        <td>
+                                            <textarea class="form-control"
+                                                      name="messdiener_{{ loop.index }}"
+                                                      rows="2"
+                                                      placeholder="Namen der Messdiener (durch Komma getrennt)&#10;z.B.: Max, Julia, Tim, Sarah">{{ row[1] if row|length > 1 else '' }}</textarea>
+                                            <small class="text-muted">Tipp: Namen durch Komma trennen</small>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <input type="hidden" name="row_count" value="{{ plan|length - 1 }}">
+                {% else %}
+                    <div class="text-center py-5">
+                        <i class="bi bi-table display-1 text-muted"></i>
+                        <h3 class="mt-3 text-muted">Noch keine Daten vorhanden</h3>
+                        <p class="text-muted">Klicken Sie auf "Zeile hinzufügen", um zu beginnen.</p>
+                    </div>
+                    <input type="hidden" name="row_count" value="0">
+                {% endif %}
+            </form>
+        </div>
+
+        <div class="mt-4">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-info-circle"></i> Hinweise</h5>
+                            <ul class="list-unstyled mb-0">
+                                <li><i class="bi bi-check text-success"></i> Datum im Format TT.MM.YYYY eingeben</li>
+                                <li><i class="bi bi-check text-success"></i> Messdiener durch Komma trennen</li>
+                                <li><i class="bi bi-check text-success"></i> Beliebig viele Messdiener pro Tag möglich</li>
+                                <li><i class="bi bi-check text-success"></i> Leere Felder werden als "-" angezeigt</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-shield-check"></i> Sicherheit</h5>
+                            <p class="card-text mb-0">
+                                Sie sind als Administrator angemeldet. Alle Änderungen werden sofort übernommen
+                                und sind öffentlich sichtbar.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Hilfsfunktionen für bessere Benutzerfreundlichkeit
+        document.addEventListener('DOMContentLoaded', function() {
+            // Auto-resize für Textareas
+            const textareas = document.querySelectorAll('textarea');
+            textareas.forEach(textarea => {
+                textarea.addEventListener('input', function() {
+                    this.style.height = 'auto';
+                    this.style.height = this.scrollHeight + 'px';
+                });
+
+                // Komma-Trennung Hilfe
+                textarea.addEventListener('blur', function() {
+                    let value = this.value.trim();
+                    if (value && !value.includes(',') && value.split(' ').length > 1) {
+                        // Automatisch Kommas zwischen Namen einfügen wenn Leerzeichen vorhanden
+                        this.value = value.replace(/\s+/g, ', ');
+                    }
+                });
+            });
+
+            // Bestätigung vor dem Verlassen bei ungespeicherten Änderungen
+            let formChanged = false;
+            const form = document.getElementById('editForm');
+            const inputs = form.querySelectorAll('input, textarea');
+
+            inputs.forEach(input => {
+                input.addEventListener('change', () => formChanged = true);
+            });
+
+            window.addEventListener('beforeunload', function(e) {
+                if (formChanged) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
+
+            // Reset flag when saving
+            form.addEventListener('submit', () => formChanged = false);
+        });
+    </script>
+</body>
+</html>
