@@ -2,11 +2,27 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 import csv
 import os
 from datetime import datetime
+import logging
+
+# Logging für Debugging aktivieren
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
 # Sicherheit: Secret Key und Admin-Passwort aus Umgebungsvariablen
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-nur-fuer-lokale-entwicklung')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'adminpass')
+try:
+    app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-nur-fuer-lokale-entwicklung')
+    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'adminpass')
+
+    # Debug-Info (nur für Entwicklung)
+    logger.info(f"SECRET_KEY gesetzt: {'Ja' if os.environ.get('SECRET_KEY') else 'Nein (Fallback)'}")
+    logger.info(f"ADMIN_PASSWORD gesetzt: {'Ja' if os.environ.get('ADMIN_PASSWORD') else 'Nein (Fallback)'}")
+
+except Exception as e:
+    logger.error(f"Fehler beim Laden der Umgebungsvariablen: {e}")
+    app.secret_key = 'fallback-key-for-emergency'
+    ADMIN_PASSWORD = 'adminpass'
 
 # Sicherstellen, dass das data-Verzeichnis existiert
 if not os.path.exists('data'):
@@ -42,15 +58,26 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'POST':
-        password = request.form.get('password', '')
-        if password == ADMIN_PASSWORD:
-            session['admin'] = True
-            flash('Erfolgreich als Administrator angemeldet!', 'success')
-            return redirect(url_for('edit'))
-        else:
-            flash('Falsches Passwort!', 'error')
-    return render_template('login.html')
+    try:
+        if request.method == 'POST':
+            password = request.form.get('password', '')
+            logger.info(f"Login-Versuch mit Passwort-Länge: {len(password) if password else 0}")
+
+            if password == ADMIN_PASSWORD:
+                session['admin'] = True
+                flash('Erfolgreich als Administrator angemeldet!', 'success')
+                logger.info("Erfolgreiche Admin-Anmeldung")
+                return redirect(url_for('edit'))
+            else:
+                flash('Falsches Passwort!', 'error')
+                logger.warning("Fehlgeschlagener Login-Versuch")
+
+        return render_template('login.html')
+
+    except Exception as e:
+        logger.error(f"Fehler in login(): {e}")
+        flash('Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.', 'error')
+        return render_template('login.html')
 
 @app.route('/edit', methods=['GET', 'POST'])
 def edit():
@@ -93,7 +120,31 @@ def logout():
     flash('Erfolgreich abgemeldet!', 'info')
     return redirect(url_for('index'))
 
+@app.route('/debug-env')
+def debug_env():
+    """Debug-Route um Umgebungsvariablen zu überprüfen (nur für Entwicklung)"""
+    if os.environ.get('FLASK_ENV') == 'development':
+        env_info = {
+            'SECRET_KEY_SET': bool(os.environ.get('SECRET_KEY')),
+            'ADMIN_PASSWORD_SET': bool(os.environ.get('ADMIN_PASSWORD')),
+            'PORT': os.environ.get('PORT', 'nicht gesetzt'),
+            'FLASK_ENV': os.environ.get('FLASK_ENV', 'nicht gesetzt'),
+        }
+        return f"<pre>{env_info}</pre>"
+    else:
+        return "Debug-Info nur in Entwicklung verfügbar", 403
+
 if __name__ == '__main__':
-    import os
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    try:
+        port = int(os.environ.get('PORT', 5000))
+        logger.info(f"Starte Server auf Port: {port}")
+        logger.info(f"Debug-Modus: {os.environ.get('FLASK_ENV') == 'development'}")
+
+        # Debug-Modus nur in Entwicklung
+        debug_mode = os.environ.get('FLASK_ENV') == 'development'
+        app.run(host='0.0.0.0', port=port, debug=debug_mode)
+
+    except Exception as e:
+        logger.error(f"Fehler beim Starten des Servers: {e}")
+        # Fallback ohne Port-Parsing
+        app.run(host='0.0.0.0', port=5000, debug=False)
