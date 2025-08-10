@@ -78,6 +78,9 @@
                                 {% for header in plan[0] %}
                                     <th>{{ header }}</th>
                                 {% endfor %}
+                                {% if plan[0]|length < 3 %}
+                                    <th>Art/Uhrzeit</th>
+                                {% endif %}
                             </tr>
                         </thead>
                         <tbody>
@@ -92,6 +95,13 @@
                                             {% endfor %}
                                         {% else %}
                                             <span class="text-muted">Noch keine Einteilung</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if row|length > 2 and row[2] %}
+                                            <span class="badge bg-secondary">{{ row[2] }}</span>
+                                        {% else %}
+                                            <span class="text-muted">-</span>
                                         {% endif %}
                                     </td>
                                 </tr>

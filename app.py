@@ -37,10 +37,10 @@ def load_plan():
     except FileNotFoundError:
         # Erstelle eine Standard-CSV-Datei falls sie nicht existiert
         default_plan = [
-            ['Datum', 'Messdiener'],
-            ['27.07.2024', 'Finni, Lukas, Isabella'],
-            ['03.08.2024', ''],
-            ['10.08.2024', '']
+            ['Datum', 'Messdiener', 'Art/Uhrzeit'],
+            ['27.07.2024', 'Finni, Lukas, Isabella', 'Gottesdienst 10:00'],
+            ['03.08.2024', '', ''],
+            ['10.08.2024', '', '']
         ]
         save_plan(default_plan)
         return default_plan
@@ -89,7 +89,9 @@ def edit():
     if request.method == 'POST':
         # Neue Zeile hinzufügen
         if 'add_row' in request.form:
-            plan.append(['', '', '', ''])
+            # Stelle sicher, dass die neue Zeile die aktuelle Spaltenanzahl hat
+            expected_cols = len(plan[0]) if plan and len(plan) > 0 else 3
+            plan.append([''] * expected_cols)
             save_plan(plan)
             flash('Neue Zeile hinzugefügt!', 'success')
             return redirect(url_for('edit'))
@@ -97,16 +99,17 @@ def edit():
         # Plan speichern
         if 'save_plan' in request.form:
             new_plan = []
-            # Header setzen
-            new_plan.append(['Datum', 'Messdiener'])
+            # Header setzen (mit neuer Spalte Art/Uhrzeit)
+            new_plan.append(['Datum', 'Messdiener', 'Art/Uhrzeit'])
 
             # Datenzeilen verarbeiten
             row_count = int(request.form.get('row_count', 0))
             for i in range(1, row_count + 1):
                 datum = request.form.get(f'datum_{i}', '').strip()
                 messdiener_text = request.form.get(f'messdiener_{i}', '').strip()
-                if datum or messdiener_text:  # Nur speichern wenn mindestens ein Feld ausgefüllt
-                    new_plan.append([datum, messdiener_text])
+                art_zeit = request.form.get(f'art_zeit_{i}', '').strip()
+                if datum or messdiener_text or art_zeit:  # Nur speichern wenn mindestens ein Feld ausgefüllt
+                    new_plan.append([datum, messdiener_text, art_zeit])
 
             save_plan(new_plan)
             flash('Plan erfolgreich gespeichert!', 'success')

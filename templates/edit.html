@@ -98,6 +98,9 @@
                                     {% for header in plan[0] %}
                                         <th>{{ header }}</th>
                                     {% endfor %}
+                                    {% if plan[0]|length < 3 %}
+                                        <th>Art/Uhrzeit</th>
+                                    {% endif %}
                                 </tr>
                             </thead>
                             <tbody>
@@ -116,6 +119,14 @@
                                                       rows="2"
                                                       placeholder="Namen der Messdiener (durch Komma getrennt)&#10;z.B.: Max, Julia, Tim, Sarah">{{ row[1] if row|length > 1 else '' }}</textarea>
                                             <small class="text-muted">Tipp: Namen durch Komma trennen</small>
+                                        </td>
+                                        <td style="width: 260px;">
+                                            <input type="text"
+                                                   class="form-control"
+                                                   name="art_zeit_{{ loop.index }}"
+                                                   value="{{ row[2] if row|length > 2 else '' }}"
+                                                   placeholder="z.B.: Gottesdienst 10:00 | Hochzeit 14:30 | Besonderes: Firmung 18:00">
+                                            <small class="text-muted">Art des Termins und Uhrzeit angeben</small>
                                         </td>
                                     </tr>
                                 {% endfor %}
