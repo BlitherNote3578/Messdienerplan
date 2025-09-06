@@ -51,6 +51,171 @@ def save_plan(plan):
         writer = csv.writer(f)
         writer.writerows(plan)
 
+# Warteschlangen (Queues) Datenzugriff
+QUEUES_FILE = 'data/queues.csv'
+ENROLLMENTS_FILE = 'data/enrollments.csv'
+
+
+def load_queues():
+    try:
+        with open(QUEUES_FILE, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if not rows:
+                raise FileNotFoundError
+            return rows
+    except FileNotFoundError:
+        default = [['ID', 'Name']]
+        save_queues(default)
+        return default
+
+
+def save_queues(rows):
+    with open(QUEUES_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+
+def load_enrollments():
+    try:
+        with open(ENROLLMENTS_FILE, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+            if not rows:
+                raise FileNotFoundError
+            return rows
+    except FileNotFoundError:
+        default = [['Person', 'QueueID', 'Timestamp']]
+        save_enrollments(default)
+        return default
+
+
+def save_enrollments(rows):
+    with open(ENROLLMENTS_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+
+def next_queue_id(queues):
+    # queues: list of rows including header ['ID','Name']
+    if len(queues) <= 1:
+        return '1'
+    try:
+        max_id = max(int(row[0]) for row in queues[1:] if row and row[0].isdigit())
+        return str(max_id + 1)
+    except ValueError:
+        return str(len(queues))
+
+
+def count_user_enrollments(enrollments, person):
+    # count unique queues a person is enrolled in
+    if len(enrollments) <= 1:
+        return 0
+    queue_ids = set()
+    for row in enrollments[1:]:
+        if len(row) >= 2 and row[0].strip().lower() == person.strip().lower():
+            queue_ids.add(row[1])
+    return len(queue_ids)
+
+
+@app.route('/queues', methods=['GET'])
+def queues_view():
+    queues = load_queues()
+    enrollments = load_enrollments()
+    # Map enrollments by QueueID
+    enroll_by_queue = {}
+    for row in enrollments[1:]:
+        if len(row) >= 2:
+            qid = row[1]
+            enroll_by_queue.setdefault(qid, []).append(row[0])
+    return render_template('queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
+
+
+@app.route('/queues/enroll', methods=['POST'])
+def queues_enroll():
+    name = request.form.get('name', '').strip()
+    qid = request.form.get('queue_id', '').strip()
+    if not name or not qid:
+        flash('Name und gültige Warteschlange erforderlich.', 'error')
+        return redirect(url_for('queues_view'))
+
+    queues = load_queues()
+    valid_ids = {row[0] for row in queues[1:] if row and len(row) >= 1}
+    if qid not in valid_ids:
+        flash('Ungültige Warteschlange.', 'error')
+        return redirect(url_for('queues_view'))
+
+    enrollments = load_enrollments()
+    # Prüfe, ob Nutzer bereits 2 unterschiedlichen Warteschlangen beigetreten ist
+    current_unique = count_user_enrollments(enrollments, name)
+
+    # Prüfe Duplikat in derselben Queue
+    already_in_queue = any((len(row) >= 2 and row[0].strip().lower() == name.lower() and row[1] == qid) for row in enrollments[1:])
+    if already_in_queue:
+        flash('Du bist bereits in dieser Warteschlange eingetragen.', 'info')
+        return redirect(url_for('queues_view'))
+
+    if current_unique >= 2:
+        flash('Maximal 2 Warteschlangen pro Person erlaubt.', 'error')
+        return redirect(url_for('queues_view'))
+
+    # Eintragen
+    timestamp = datetime.now().isoformat(timespec='minutes')
+    enrollments.append([name, qid, timestamp])
+    save_enrollments(enrollments)
+    flash('Erfolgreich eingetragen!', 'success')
+    return redirect(url_for('queues_view'))
+
+
+@app.route('/admin/queues', methods=['GET', 'POST'])
+def admin_queues():
+    if not session.get('admin'):
+        flash('Sie müssen sich als Administrator anmelden!', 'error')
+        return redirect(url_for('login'))
+
+    queues = load_queues()
+
+    if request.method == 'POST':
+        if 'add_queue' in request.form:
+            name = request.form.get('queue_name', '').strip()
+            if not name:
+                flash('Name der Warteschlange darf nicht leer sein.', 'error')
+                return redirect(url_for('admin_queues'))
+            qid = next_queue_id(queues)
+            queues.append([qid, name])
+            save_queues(queues)
+            flash('Warteschlange hinzugefügt.', 'success')
+            return redirect(url_for('admin_queues'))
+
+        if 'delete_queue' in request.form:
+            qid = request.form.get('queue_id', '').strip()
+            queues = [queues[0]] + [row for row in queues[1:] if row[0] != qid]
+            save_queues(queues)
+            # Auch Anmeldungen für diese Queue entfernen
+            enrollments = load_enrollments()
+            enrollments = [enrollments[0]] + [row for row in enrollments[1:] if row[1] != qid]
+            save_enrollments(enrollments)
+            flash('Warteschlange gelöscht.', 'info')
+            return redirect(url_for('admin_queues'))
+
+        if 'clear_enrollments' in request.form:
+            qid = request.form.get('queue_id', '').strip()
+            enrollments = load_enrollments()
+            enrollments = [enrollments[0]] + [row for row in enrollments[1:] if row[1] != qid]
+            save_enrollments(enrollments)
+            flash('Einträge der Warteschlange geleert.', 'info')
+            return redirect(url_for('admin_queues'))
+
+    # Für Anzeige: Enrollments pro Queue
+    enrollments = load_enrollments()
+    enroll_by_queue = {}
+    for row in enrollments[1:]:
+        if len(row) >= 2:
+            qid = row[1]
+            enroll_by_queue.setdefault(qid, []).append(row[0])
+
+    return render_template('admin_queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
+
 @app.route('/')
 def index():
     plan = load_plan()

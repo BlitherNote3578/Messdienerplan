@@ -124,6 +124,16 @@
         </div>
 
         <div class="mt-4 text-center text-muted">
+            <div class="mb-2">
+                <a href="{{ url_for('queues_view') }}" class="btn btn-outline-primary">
+                    <i class="bi bi-list-ol"></i> Zu den Warteschlangen
+                </a>
+                {% if session.admin %}
+                    <a href="{{ url_for('admin_queues') }}" class="btn btn-outline-secondary ms-2">
+                        <i class="bi bi-gear"></i> Warteschlangen verwalten
+                    </a>
+                {% endif %}
+            </div>
             <small>
                 <i class="bi bi-info-circle"></i>
                 Letzte Aktualisierung: {{ moment().format('DD.MM.YYYY HH:mm') if moment else 'Unbekannt' }}

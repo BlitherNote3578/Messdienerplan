@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Warteschlangen</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+<body>
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1><i class="bi bi-gear"></i> Warteschlangen verwalten</h1>
+        <div>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary me-2"><i class="bi bi-arrow-left"></i> Zurück</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary"><i class="bi bi-box-arrow-right"></i> Abmelden</a>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else 'success' if category == 'success' else 'info' }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="POST" class="row g-2 align-items-center">
+                <div class="col-auto">
+                    <label for="queue_name" class="col-form-label">Neue Warteschlange:</label>
+                </div>
+                <div class="col-auto">
+                    <input type="text" id="queue_name" name="queue_name" class="form-control" placeholder="z.B. Hochzeit" required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" name="add_queue" class="btn btn-primary"><i class="bi bi-plus"></i> Hinzufügen</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {% if queues and queues|length > 1 %}
+        <div class="table-responsive">
+            <table class="table table-bordered align-middle">
+                <thead>
+                <tr>
+                    <th style="width:120px;">ID</th>
+                    <th>Name</th>
+                    <th style="width:320px;">Aktionen</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for q in queues[1:] %}
+                    <tr>
+                        <td>{{ q[0] }}</td>
+                        <td>{{ q[1] }}</td>
+                        <td>
+                            <form method="POST" class="d-inline">
+                                <input type="hidden" name="queue_id" value="{{ q[0] }}">
+                                <button type="submit" name="clear_enrollments" class="btn btn-warning btn-sm"><i class="bi bi-eraser"></i> Einträge leeren</button>
+                            </form>
+                            <form method="POST" class="d-inline ms-2">
+                                <input type="hidden" name="queue_id" value="{{ q[0] }}">
+                                <button type="submit" name="delete_queue" class="btn btn-danger btn-sm"><i class="bi bi-trash"></i> Löschen</button>
+                            </form>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="3">
+                            <strong>Wartende:</strong>
+                            {% set list = enroll_by_queue.get(q[0], []) %}
+                            {% if list %}
+                                {% for p in list %}
+                                    <span class="badge bg-primary me-1">{{ p }}</span>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted">Keine Einträge</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="alert alert-info">Noch keine Warteschlangen vorhanden. Fügen Sie oben eine hinzu.</div>
+    {% endif %}
+
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
