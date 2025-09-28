@@ -78,10 +78,10 @@ def init_db_and_migrate():
     # Tabellen anlegen
     Base.metadata.create_all(engine)
     from sqlalchemy import select, func
-    session = SessionLocal()
+    db = SessionLocal()
     try:
         # Plan migrieren, falls leer
-        plan_count = session.query(func.count(PlanEntry.id)).scalar()
+        plan_count = db.query(func.count(PlanEntry.id)).scalar()
         if plan_count == 0:
             plan_csv_path = os.path.join('data', 'plan.csv')
             if os.path.exists(plan_csv_path):
@@ -93,8 +93,8 @@ def init_db_and_migrate():
                             datum = row[0] if len(row) > 0 else ''
                             messdiener_text = row[1] if len(row) > 1 else ''
                             art = row[2] if len(row) > 2 else ''
-                            session.add(PlanEntry(datum=datum, messdiener_text=messdiener_text, art_uhrzeit=art))
-                    session.commit()
+                            db.add(PlanEntry(datum=datum, messdiener_text=messdiener_text, art_uhrzeit=art))
+                    db.commit()
                 except Exception as e:
                     logger.warning(f"Konnte plan.csv nicht migrieren: {e}")
             else:
@@ -104,12 +104,12 @@ def init_db_and_migrate():
                     PlanEntry(datum='03.08.2024', messdiener_text='', art_uhrzeit=''),
                     PlanEntry(datum='10.08.2024', messdiener_text='', art_uhrzeit=''),
                 ]
-                session.add_all(defaults)
-                session.commit()
+                db.add_all(defaults)
+                db.commit()
 
         # Queues migrieren, falls leer
         from sqlalchemy import func as sa_func
-        queue_count = session.query(sa_func.count(Queue.id)).scalar()
+        queue_count = db.query(sa_func.count(Queue.id)).scalar()
         if queue_count == 0:
             queues_csv = os.path.join('data', 'queues.csv')
             if os.path.exists(queues_csv):
@@ -128,13 +128,13 @@ def init_db_and_migrate():
                             q = Queue(name=name)
                             if qid is not None:
                                 q.id = qid
-                            session.add(q)
-                    session.commit()
+                            db.add(q)
+                    db.commit()
                 except Exception as e:
                     logger.warning(f"Konnte queues.csv nicht migrieren: {e}")
 
         # Enrollments migrieren, falls leer
-        enroll_count = session.query(sa_func.count(Enrollment.id)).scalar()
+        enroll_count = db.query(sa_func.count(Enrollment.id)).scalar()
         if enroll_count == 0:
             enroll_csv = os.path.join('data', 'enrollments.csv')
             if os.path.exists(enroll_csv):
@@ -151,12 +151,12 @@ def init_db_and_migrate():
                             except Exception:
                                 continue
                             ts = row[2] if len(row) > 2 else ''
-                            session.add(Enrollment(person=person, queue_id=qid, timestamp=ts))
-                    session.commit()
+                            db.add(Enrollment(person=person, queue_id=qid, timestamp=ts))
+                    db.commit()
                 except Exception as e:
                     logger.warning(f"Konnte enrollments.csv nicht migrieren: {e}")
     finally:
-        session.close()
+        db.close()
 
 
 # DB initialisieren
@@ -164,31 +164,31 @@ init_db_and_migrate()
 
 # DB-Helper für Plan als 2D-Liste (kompatibel zu Templates)
 def get_plan_list():
-    session = SessionLocal()
+    db = SessionLocal()
     try:
-        entries = session.query(PlanEntry).order_by(PlanEntry.id.asc()).all()
+        entries = db.query(PlanEntry).order_by(PlanEntry.id.asc()).all()
         plan = [['Datum', 'Messdiener', 'Art/Uhrzeit']]
         for e in entries:
             plan.append([e.datum or '', e.messdiener_text or '', e.art_uhrzeit or ''])
         return plan
     finally:
-        session.close()
+        db.close()
 
 
 def save_plan_db(plan_rows):
     # plan_rows: [['Datum','Messdiener','Art/Uhrzeit'], [datum, mess, art], ...]
-    session = SessionLocal()
+    db = SessionLocal()
     try:
         # Alles ersetzen
-        session.query(PlanEntry).delete()
+        db.query(PlanEntry).delete()
         for row in plan_rows[1:]:
             datum = row[0] if len(row) > 0 else ''
             mess = row[1] if len(row) > 1 else ''
             art = row[2] if len(row) > 2 else ''
-            session.add(PlanEntry(datum=datum, messdiener_text=mess, art_uhrzeit=art))
-        session.commit()
+            db.add(PlanEntry(datum=datum, messdiener_text=mess, art_uhrzeit=art))
+        db.commit()
     finally:
-        session.close()
+        db.close()
 
 # CSV einlesen
 def load_plan():
@@ -282,10 +282,10 @@ def count_user_enrollments(enrollments, person):
 
 @app.route('/queues', methods=['GET'])
 def queues_view():
-    session = SessionLocal()
+    db = SessionLocal()
     try:
-        q_list = session.query(Queue).order_by(Queue.id.asc()).all()
-        e_list = session.query(Enrollment).order_by(Enrollment.id.asc()).all()
+        q_list = db.query(Queue).order_by(Queue.id.asc()).all()
+        e_list = db.query(Enrollment).order_by(Enrollment.id.asc()).all()
         # CSV-ähnliche Struktur für bestehende Templates
         queues = [['ID', 'Name']]
         for q in q_list:
@@ -296,7 +296,7 @@ def queues_view():
             enroll_by_queue.setdefault(qid, []).append(e.person)
         return render_template('queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
     finally:
-        session.close()
+        db.close()
 
 
 @app.route('/queues/enroll', methods=['POST'])
@@ -307,22 +307,22 @@ def queues_enroll():
         flash('Name und gültige Warteschlange erforderlich.', 'error')
         return redirect(url_for('queues_view'))
 
-    session = SessionLocal()
+    db = SessionLocal()
     try:
         # Queue validieren
-        q = session.query(Queue).filter_by(id=int(qid)).one_or_none()
+        q = db.query(Queue).filter_by(id=int(qid)).one_or_none()
         if not q:
             flash('Ungültige Warteschlange.', 'error')
             return redirect(url_for('queues_view'))
 
         # Limit prüfen: max 2 unterschiedliche Queues
         from sqlalchemy import func
-        unique_count = session.query(func.count(func.distinct(Enrollment.queue_id))).filter(Enrollment.person.ilike(name)).scalar()
+        unique_count = db.query(func.count(func.distinct(Enrollment.queue_id))).filter(Enrollment.person.ilike(name)).scalar()
         if unique_count is None:
             unique_count = 0
 
         # Duplikat in derselben Queue?
-        exists = session.query(Enrollment).filter_by(person=name, queue_id=q.id).first()
+        exists = db.query(Enrollment).filter_by(person=name, queue_id=q.id).first()
         if exists:
             flash('Du bist bereits in dieser Warteschlange eingetragen.', 'info')
             return redirect(url_for('queues_view'))
@@ -333,12 +333,12 @@ def queues_enroll():
 
         # Eintragen
         timestamp = datetime.now().isoformat(timespec='minutes')
-        session.add(Enrollment(person=name, queue_id=q.id, timestamp=timestamp))
-        session.commit()
+        db.add(Enrollment(person=name, queue_id=q.id, timestamp=timestamp))
+        db.commit()
         flash('Erfolgreich eingetragen!', 'success')
         return redirect(url_for('queues_view'))
     finally:
-        session.close()
+        db.close()
 
 
 @app.route('/admin/queues', methods=['GET', 'POST'])
@@ -347,7 +347,7 @@ def admin_queues():
         flash('Sie müssen sich als Administrator anmelden!', 'error')
         return redirect(url_for('login'))
 
-    session = SessionLocal()
+    db = SessionLocal()
 
     if request.method == 'POST':
         if 'add_queue' in request.form:
@@ -355,8 +355,8 @@ def admin_queues():
             if not name:
                 flash('Name der Warteschlange darf nicht leer sein.', 'error')
                 return redirect(url_for('admin_queues'))
-            session.add(Queue(name=name))
-            session.commit()
+            db.add(Queue(name=name))
+            db.commit()
             flash('Warteschlange hinzugefügt.', 'success')
             return redirect(url_for('admin_queues'))
 
@@ -368,9 +368,9 @@ def admin_queues():
                 flash('Ungültige Queue-ID.', 'error')
                 return redirect(url_for('admin_queues'))
             # Enrollments werden per FK-Constraint entfernt, aber zur Sicherheit explizit löschen
-            session.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
-            session.query(Queue).filter(Queue.id == qid_int).delete()
-            session.commit()
+            db.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
+            db.query(Queue).filter(Queue.id == qid_int).delete()
+            db.commit()
             flash('Warteschlange gelöscht.', 'info')
             return redirect(url_for('admin_queues'))
 
@@ -382,15 +382,15 @@ def admin_queues():
             except Exception:
                 flash('Ungültige Queue-ID.', 'error')
                 return redirect(url_for('admin_queues'))
-            session.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
-            session.commit()
+            db.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
+            db.commit()
             flash('Einträge der Warteschlange geleert.', 'info')
             return redirect(url_for('admin_queues'))
 
 
     # Für Anzeige vorbereiten
-    q_list = session.query(Queue).order_by(Queue.id.asc()).all()
-    e_list = session.query(Enrollment).order_by(Enrollment.id.asc()).all()
+    q_list = db.query(Queue).order_by(Queue.id.asc()).all()
+    e_list = db.query(Enrollment).order_by(Enrollment.id.asc()).all()
     queues = [['ID', 'Name']]
     for q in q_list:
         queues.append([str(q.id), q.name])
@@ -399,7 +399,7 @@ def admin_queues():
         qid = str(e.queue_id)
         enroll_by_queue.setdefault(qid, []).append(e.person)
 
-    session.close()
+    db.close()
     return render_template('admin_queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
 
 @app.route('/')
