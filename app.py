@@ -38,6 +38,12 @@ if not DATABASE_URL:
     # Lokale SQLite-Datei als Fallback
     sqlite_path = os.path.abspath(os.path.join('data', 'app.db'))
     DATABASE_URL = f'sqlite:///{sqlite_path}'
+else:
+    # Robustheit für Render/Heroku URLs
+    if DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql+psycopg://', 1)
+    elif DATABASE_URL.startswith('postgresql://') and '+psycopg' not in DATABASE_URL:
+        DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
