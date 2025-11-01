@@ -28,6 +28,125 @@ except Exception as e:
 if not os.path.exists('data'):
     os.makedirs('data')
 
+# --- GitHub Gist Fallback Storage (optional) ---
+import json
+import requests
+
+GIST_ID = os.environ.get('GIST_ID')
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+GIST_FILENAME = os.environ.get('GIST_FILENAME', 'data.json')
+
+# Wird auf True gesetzt, wenn die Datenbank beim Start nicht erreichbar ist
+USE_GIST = False
+
+def gist_configured():
+    return bool(GIST_ID and GITHUB_TOKEN)
+
+
+def _default_state():
+    return {
+        'plan': [
+            ['Datum', 'Messdiener', 'Art/Uhrzeit'],
+            ['27.07.2024', '', 'Gottesdienst 10:00'],
+            ['03.08.2024', '', ''],
+            ['10.08.2024', '', ''],
+        ],
+        'queues': [['ID', 'Name']],
+        'enrollments': [['Person', 'QueueID', 'Timestamp']],
+    }
+
+
+def load_gist_state():
+    if not gist_configured():
+        logger.warning('Gist nicht konfiguriert (GIST_ID/GITHUB_TOKEN fehlen).')
+        return _default_state()
+    try:
+        r = requests.get(
+            f'https://api.github.com/gists/{GIST_ID}',
+            headers={'Authorization': f'token {GITHUB_TOKEN}', 'Accept': 'application/vnd.github+json'},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            logger.warning(f'Gist GET fehlgeschlagen: {r.status_code} {r.text[:200]}')
+            return _default_state()
+        j = r.json()
+        files = j.get('files', {})
+        fi = files.get(GIST_FILENAME)
+        if not fi:
+            # Datei noch nicht vorhanden -> Default anlegen
+            state = _default_state()
+            save_gist_state(state)
+            return state
+        if fi.get('truncated') and fi.get('raw_url'):
+            rr = requests.get(fi['raw_url'], timeout=10)
+            content = rr.text
+        else:
+            content = fi.get('content', '')
+        try:
+            state = json.loads(content) if content.strip() else _default_state()
+        except Exception:
+            state = _default_state()
+        # Sicherheitsnetz: fehlende Keys ergänzen
+        if 'plan' not in state or not isinstance(state['plan'], list):
+            state['plan'] = _default_state()['plan']
+        if 'queues' not in state or not isinstance(state['queues'], list):
+            state['queues'] = _default_state()['queues']
+        if 'enrollments' not in state or not isinstance(state['enrollments'], list):
+            state['enrollments'] = _default_state()['enrollments']
+        return state
+    except Exception as e:
+        logger.warning(f'Fehler beim Laden aus Gist: {e}')
+        return _default_state()
+
+
+def save_gist_state(state: dict):
+    if not gist_configured():
+        logger.warning('Gist nicht konfiguriert – Speichern übersprungen.')
+        return False
+    try:
+        content = json.dumps(state, ensure_ascii=False, indent=2)
+        payload = {'files': {GIST_FILENAME: {'content': content}}}
+        r = requests.patch(
+            f'https://api.github.com/gists/{GIST_ID}',
+            headers={'Authorization': f'token {GITHUB_TOKEN}', 'Accept': 'application/vnd.github+json'},
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code not in (200, 201):
+            logger.warning(f'Gist PATCH fehlgeschlagen: {r.status_code} {r.text[:200]}')
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f'Fehler beim Speichern ins Gist: {e}')
+        return False
+
+
+def mirror_full_from_db_to_gist():
+    """Liest vollständigen Zustand aus der DB und spiegelt ihn ins Gist (falls konfiguriert)."""
+    if not gist_configured():
+        return
+    try:
+        db = SessionLocal()
+        try:
+            plan_rows = [['Datum', 'Messdiener', 'Art/Uhrzeit']]
+            for e in db.query(PlanEntry).order_by(PlanEntry.id.asc()).all():
+                plan_rows.append([e.datum or '', e.messdiener_text or '', e.art_uhrzeit or ''])
+
+            queues_rows = [['ID', 'Name']]
+            for q in db.query(Queue).order_by(Queue.id.asc()).all():
+                queues_rows.append([str(q.id), q.name])
+
+            enroll_rows = [['Person', 'QueueID', 'Timestamp']]
+            for en in db.query(Enrollment).order_by(Enrollment.id.asc()).all():
+                enroll_rows.append([en.person, str(en.queue_id), en.timestamp or ''])
+
+            state = {'plan': plan_rows, 'queues': queues_rows, 'enrollments': enroll_rows}
+            save_gist_state(state)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f'Fehler beim DB→Gist-Mirror: {e}')
+
 
 # Datenbank (SQLAlchemy) Setup
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey
@@ -44,6 +163,162 @@ else:
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql+psycopg://', 1)
     elif DATABASE_URL.startswith('postgresql://') and '+psycopg' not in DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
+# Storage-API, die auf DB oder Gist zugreift, je nach USE_GIST
+
+def storage_get_plan():
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        return state.get('plan', _default_state()['plan'])
+    return get_plan_list()
+
+
+def storage_save_plan(plan_rows):
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        state['plan'] = plan_rows
+        save_gist_state(state)
+        return
+    save_plan_db(plan_rows)
+
+
+def storage_get_queues_and_enrollments():
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        # View-Format wie bisher: queues als Header + rows, enroll_by_queue Map
+        enroll_by_queue = {}
+        for row in enrollments[1:]:
+            if len(row) >= 2:
+                enroll_by_queue.setdefault(str(row[1]), []).append(row[0])
+        return queues, enroll_by_queue
+
+    # DB-Zweig (wie bisher)
+    db = SessionLocal()
+    try:
+        q_list = db.query(Queue).order_by(Queue.id.asc()).all()
+        e_list = db.query(Enrollment).order_by(Enrollment.id.asc()).all()
+        queues = [['ID', 'Name']]
+        for q in q_list:
+            queues.append([str(q.id), q.name])
+        enroll_by_queue = {}
+        for e in e_list:
+            qid = str(e.queue_id)
+            enroll_by_queue.setdefault(qid, []).append(e.person)
+        return queues, enroll_by_queue
+    finally:
+        db.close()
+
+
+def storage_enroll_person(name, qid):
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        # Queue existiert?
+        valid = any(row and row[0] == str(qid) for row in queues[1:])
+        if not valid:
+            return False, 'Ungültige Warteschlange.'
+        # Limit prüfen: max 2 unterschiedliche Queues
+        unique_queues = {row[1] for row in enrollments[1:] if row and row[0].strip().lower() == name.strip().lower()}
+        if len(unique_queues) >= 2:
+            return False, 'Maximal 2 Warteschlangen pro Person erlaubt.'
+        # Duplikat in derselben Queue?
+        for row in enrollments[1:]:
+            if row and row[0].strip() == name and row[1] == str(qid):
+                return False, 'Du bist bereits in dieser Warteschlange eingetragen.'
+        # Eintragen
+        ts = datetime.now().isoformat(timespec='minutes')
+        enrollments.append([name, str(qid), ts])
+        state['enrollments'] = enrollments
+        save_gist_state(state)
+        return True, 'Erfolgreich eingetragen!'
+
+    # DB-Zweig
+    db = SessionLocal()
+    try:
+        q = db.query(Queue).filter_by(id=int(qid)).one_or_none()
+        if not q:
+            return False, 'Ungültige Warteschlange.'
+        from sqlalchemy import func
+        unique_count = db.query(func.count(func.distinct(Enrollment.queue_id))).filter(Enrollment.person.ilike(name)).scalar() or 0
+        exists = db.query(Enrollment).filter_by(person=name, queue_id=q.id).first()
+        if exists:
+            return False, 'Du bist bereits in dieser Warteschlange eingetragen.'
+        if unique_count >= 2:
+            return False, 'Maximal 2 Warteschlangen pro Person erlaubt.'
+        ts = datetime.now().isoformat(timespec='minutes')
+        db.add(Enrollment(person=name, queue_id=q.id, timestamp=ts))
+        db.commit()
+        return True, 'Erfolgreich eingetragen!'
+    finally:
+        db.close()
+
+
+def storage_admin_add_queue(name):
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        # neue ID
+        if len(queues) <= 1:
+            new_id = '1'
+        else:
+            try:
+                new_id = str(max(int(r[0]) for r in queues[1:] if r and r[0].isdigit()) + 1)
+            except Exception:
+                new_id = str(len(queues))
+        queues.append([new_id, name])
+        state['queues'] = queues
+        save_gist_state(state)
+        return True
+    # DB-Zweig
+    db = SessionLocal()
+    try:
+        db.add(Queue(name=name))
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def storage_admin_delete_queue(qid):
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        queues = [queues[0]] + [r for r in queues[1:] if r and r[0] != str(qid)]
+        enrollments = [enrollments[0]] + [r for r in enrollments[1:] if r and r[1] != str(qid)]
+        state['queues'] = queues
+        state['enrollments'] = enrollments
+        save_gist_state(state)
+        return True
+    db = SessionLocal()
+    try:
+        db.query(Enrollment).filter(Enrollment.queue_id == int(qid)).delete()
+        db.query(Queue).filter(Queue.id == int(qid)).delete()
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def storage_admin_clear_enrollments(qid):
+    if USE_GIST and gist_configured():
+        state = load_gist_state()
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        enrollments = [enrollments[0]] + [r for r in enrollments[1:] if r and r[1] != str(qid)]
+        state['enrollments'] = enrollments
+        save_gist_state(state)
+        return True
+    db = SessionLocal()
+    try:
+        db.query(Enrollment).filter(Enrollment.queue_id == int(qid)).delete()
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -77,7 +352,7 @@ class Enrollment(Base):
 def init_db_and_migrate():
     # Tabellen anlegen
     Base.metadata.create_all(engine)
-    from sqlalchemy import select, func
+    from sqlalchemy import func
     db = SessionLocal()
     try:
         # Plan migrieren, falls leer
@@ -157,13 +432,27 @@ def init_db_and_migrate():
                     logger.warning(f"Konnte enrollments.csv nicht migrieren: {e}")
     finally:
         db.close()
+    # Nach erfolgreicher DB-Initialisierung aktuellen Stand ins Gist spiegeln (falls konfiguriert)
+    try:
+        mirror_full_from_db_to_gist()
+    except Exception as e:
+        logger.warning(f"Konnte nicht ins Gist spiegeln: {e}")
 
 
-# DB initialisieren
-init_db_and_migrate()
+# DB initialisieren (bei Fehler: auf Gist-Fallback umschalten)
+try:
+    init_db_and_migrate()
+except Exception as e:
+    logger.error(f"DB-Initialisierung fehlgeschlagen, nutze Gist-Fallback: {e}")
+    USE_GIST = True
+    # Optional: initialen Zustand ins Gist schreiben, damit später Lesezugriffe funktionieren
+    if gist_configured():
+        save_gist_state(_default_state())
 
 # DB-Helper für Plan als 2D-Liste (kompatibel zu Templates)
 def get_plan_list():
+    if USE_GIST and gist_configured():
+        return storage_get_plan()
     db = SessionLocal()
     try:
         entries = db.query(PlanEntry).order_by(PlanEntry.id.asc()).all()
@@ -177,6 +466,9 @@ def get_plan_list():
 
 def save_plan_db(plan_rows):
     # plan_rows: [['Datum','Messdiener','Art/Uhrzeit'], [datum, mess, art], ...]
+    if USE_GIST and gist_configured():
+        storage_save_plan(plan_rows)
+        return
     db = SessionLocal()
     try:
         # Alles ersetzen
@@ -282,21 +574,8 @@ def count_user_enrollments(enrollments, person):
 
 @app.route('/queues', methods=['GET'])
 def queues_view():
-    db = SessionLocal()
-    try:
-        q_list = db.query(Queue).order_by(Queue.id.asc()).all()
-        e_list = db.query(Enrollment).order_by(Enrollment.id.asc()).all()
-        # CSV-ähnliche Struktur für bestehende Templates
-        queues = [['ID', 'Name']]
-        for q in q_list:
-            queues.append([str(q.id), q.name])
-        enroll_by_queue = {}
-        for e in e_list:
-            qid = str(e.queue_id)
-            enroll_by_queue.setdefault(qid, []).append(e.person)
-        return render_template('queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
-    finally:
-        db.close()
+    queues, enroll_by_queue = storage_get_queues_and_enrollments()
+    return render_template('queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
 
 
 @app.route('/queues/enroll', methods=['POST'])
@@ -307,38 +586,9 @@ def queues_enroll():
         flash('Name und gültige Warteschlange erforderlich.', 'error')
         return redirect(url_for('queues_view'))
 
-    db = SessionLocal()
-    try:
-        # Queue validieren
-        q = db.query(Queue).filter_by(id=int(qid)).one_or_none()
-        if not q:
-            flash('Ungültige Warteschlange.', 'error')
-            return redirect(url_for('queues_view'))
-
-        # Limit prüfen: max 2 unterschiedliche Queues
-        from sqlalchemy import func
-        unique_count = db.query(func.count(func.distinct(Enrollment.queue_id))).filter(Enrollment.person.ilike(name)).scalar()
-        if unique_count is None:
-            unique_count = 0
-
-        # Duplikat in derselben Queue?
-        exists = db.query(Enrollment).filter_by(person=name, queue_id=q.id).first()
-        if exists:
-            flash('Du bist bereits in dieser Warteschlange eingetragen.', 'info')
-            return redirect(url_for('queues_view'))
-
-        if unique_count >= 2:
-            flash('Maximal 2 Warteschlangen pro Person erlaubt.', 'error')
-            return redirect(url_for('queues_view'))
-
-        # Eintragen
-        timestamp = datetime.now().isoformat(timespec='minutes')
-        db.add(Enrollment(person=name, queue_id=q.id, timestamp=timestamp))
-        db.commit()
-        flash('Erfolgreich eingetragen!', 'success')
-        return redirect(url_for('queues_view'))
-    finally:
-        db.close()
+    ok, msg = storage_enroll_person(name, qid)
+    flash(msg, 'success' if ok else 'error' if 'Fehler' in msg or 'Ungültig' in msg else 'info')
+    return redirect(url_for('queues_view'))
 
 
 @app.route('/admin/queues', methods=['GET', 'POST'])
@@ -347,16 +597,13 @@ def admin_queues():
         flash('Sie müssen sich als Administrator anmelden!', 'error')
         return redirect(url_for('login'))
 
-    db = SessionLocal()
-
     if request.method == 'POST':
         if 'add_queue' in request.form:
             name = request.form.get('queue_name', '').strip()
             if not name:
                 flash('Name der Warteschlange darf nicht leer sein.', 'error')
                 return redirect(url_for('admin_queues'))
-            db.add(Queue(name=name))
-            db.commit()
+            storage_admin_add_queue(name)
             flash('Warteschlange hinzugefügt.', 'success')
             return redirect(url_for('admin_queues'))
 
@@ -367,13 +614,9 @@ def admin_queues():
             except Exception:
                 flash('Ungültige Queue-ID.', 'error')
                 return redirect(url_for('admin_queues'))
-            # Enrollments werden per FK-Constraint entfernt, aber zur Sicherheit explizit löschen
-            db.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
-            db.query(Queue).filter(Queue.id == qid_int).delete()
-            db.commit()
+            storage_admin_delete_queue(qid_int)
             flash('Warteschlange gelöscht.', 'info')
             return redirect(url_for('admin_queues'))
-
 
         if 'clear_enrollments' in request.form:
             qid = request.form.get('queue_id', '').strip()
@@ -382,24 +625,12 @@ def admin_queues():
             except Exception:
                 flash('Ungültige Queue-ID.', 'error')
                 return redirect(url_for('admin_queues'))
-            db.query(Enrollment).filter(Enrollment.queue_id == qid_int).delete()
-            db.commit()
+            storage_admin_clear_enrollments(qid_int)
             flash('Einträge der Warteschlange geleert.', 'info')
             return redirect(url_for('admin_queues'))
 
-
     # Für Anzeige vorbereiten
-    q_list = db.query(Queue).order_by(Queue.id.asc()).all()
-    e_list = db.query(Enrollment).order_by(Enrollment.id.asc()).all()
-    queues = [['ID', 'Name']]
-    for q in q_list:
-        queues.append([str(q.id), q.name])
-    enroll_by_queue = {}
-    for e in e_list:
-        qid = str(e.queue_id)
-        enroll_by_queue.setdefault(qid, []).append(e.person)
-
-    db.close()
+    queues, enroll_by_queue = storage_get_queues_and_enrollments()
     return render_template('admin_queues.html', queues=queues, enroll_by_queue=enroll_by_queue)
 
 @app.route('/')
