@@ -39,6 +39,14 @@ GIST_FILENAME = os.environ.get('GIST_FILENAME', 'data.json')
 # Wird auf True gesetzt, wenn die Datenbank beim Start nicht erreichbar ist
 USE_GIST = False
 
+def _switch_to_gist(reason: str):
+    global USE_GIST
+    if gist_configured():
+        USE_GIST = True
+        logger.warning(f"Wechsle auf Gist-Fallback: {reason}")
+    else:
+        logger.error(f"Gist nicht konfiguriert – kein Fallback möglich ({reason})")
+
 def gist_configured():
     return bool(GIST_ID and GITHUB_TOKEN)
 
@@ -141,7 +149,20 @@ def mirror_full_from_db_to_gist():
                 enroll_rows.append([en.person, str(en.queue_id), en.timestamp or ''])
 
             state = {'plan': plan_rows, 'queues': queues_rows, 'enrollments': enroll_rows}
-            save_gist_state(state)
+            # Überschreibe Gist nur, wenn es noch leer ist (nur Header vorhanden)
+            try:
+                existing = load_gist_state()
+                has_content = (
+                    (isinstance(existing.get('plan'), list) and len(existing.get('plan')) > 1) or
+                    (isinstance(existing.get('queues'), list) and len(existing.get('queues')) > 1) or
+                    (isinstance(existing.get('enrollments'), list) and len(existing.get('enrollments')) > 1)
+                )
+            except Exception:
+                has_content = False
+            if has_content:
+                logger.info('Gist hat bereits Inhalte – Mirror wird nicht überschrieben.')
+            else:
+                save_gist_state(state)
         finally:
             db.close()
     except Exception as e:
@@ -206,6 +227,17 @@ def storage_get_queues_and_enrollments():
             qid = str(e.queue_id)
             enroll_by_queue.setdefault(qid, []).append(e.person)
         return queues, enroll_by_queue
+    except Exception as e:
+        logger.error(f"DB-Fehler in storage_get_queues_and_enrollments(): {e}")
+        _switch_to_gist("DB-Fehler beim Lesen der Queues/Enrollments")
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        enroll_by_queue = {}
+        for row in enrollments[1:]:
+            if len(row) >= 2:
+                enroll_by_queue.setdefault(str(row[1]), []).append(row[0])
+        return queues, enroll_by_queue
     finally:
         db.close()
 
@@ -251,6 +283,16 @@ def storage_enroll_person(name, qid):
         db.add(Enrollment(person=name, queue_id=q.id, timestamp=ts))
         db.commit()
         return True, 'Erfolgreich eingetragen!'
+    except Exception as e:
+        logger.error(f"DB-Fehler in storage_enroll_person(): {e}")
+        _switch_to_gist("DB-Fehler bei Enrollment")
+        ts = datetime.now().isoformat(timespec='minutes')
+        state = load_gist_state()
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        enrollments.append([name, str(qid), ts])
+        state['enrollments'] = enrollments
+        save_gist_state(state)
+        return True, 'Erfolgreich eingetragen!'
     finally:
         db.close()
 
@@ -277,6 +319,16 @@ def storage_admin_add_queue(name):
         db.add(Queue(name=name))
         db.commit()
         return True
+    except Exception as e:
+        logger.error(f"DB-Fehler in storage_admin_add_queue(): {e}")
+        _switch_to_gist("DB-Fehler beim Erstellen einer Queue")
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        new_id = '1' if len(queues) <= 1 else str(max(int(r[0]) for r in queues[1:] if r and r[0].isdigit()) + 1)
+        queues.append([new_id, name])
+        state['queues'] = queues
+        save_gist_state(state)
+        return True
     finally:
         db.close()
 
@@ -298,6 +350,18 @@ def storage_admin_delete_queue(qid):
         db.query(Queue).filter(Queue.id == int(qid)).delete()
         db.commit()
         return True
+    except Exception as e:
+        logger.error(f"DB-Fehler in storage_admin_delete_queue(): {e}")
+        _switch_to_gist("DB-Fehler beim Löschen einer Queue")
+        state = load_gist_state()
+        queues = state.get('queues', _default_state()['queues'])
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        queues = [queues[0]] + [r for r in queues[1:] if r and r[0] != str(qid)]
+        enrollments = [enrollments[0]] + [r for r in enrollments[1:] if r and r[1] != str(qid)]
+        state['queues'] = queues
+        state['enrollments'] = enrollments
+        save_gist_state(state)
+        return True
     finally:
         db.close()
 
@@ -314,6 +378,15 @@ def storage_admin_clear_enrollments(qid):
     try:
         db.query(Enrollment).filter(Enrollment.queue_id == int(qid)).delete()
         db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"DB-Fehler in storage_admin_clear_enrollments(): {e}")
+        _switch_to_gist("DB-Fehler beim Leeren einer Queue")
+        state = load_gist_state()
+        enrollments = state.get('enrollments', _default_state()['enrollments'])
+        enrollments = [enrollments[0]] + [r for r in enrollments[1:] if r and r[1] != str(qid)]
+        state['enrollments'] = enrollments
+        save_gist_state(state)
         return True
     finally:
         db.close()
@@ -445,9 +518,7 @@ try:
 except Exception as e:
     logger.error(f"DB-Initialisierung fehlgeschlagen, nutze Gist-Fallback: {e}")
     USE_GIST = True
-    # Optional: initialen Zustand ins Gist schreiben, damit später Lesezugriffe funktionieren
-    if gist_configured():
-        save_gist_state(_default_state())
+    # Wichtig: Bestehende Gist-Daten NICHT überschreiben. Nur lesen.
 
 # DB-Helper für Plan als 2D-Liste (kompatibel zu Templates)
 def get_plan_list():
@@ -460,6 +531,10 @@ def get_plan_list():
         for e in entries:
             plan.append([e.datum or '', e.messdiener_text or '', e.art_uhrzeit or ''])
         return plan
+    except Exception as e:
+        logger.error(f"DB-Fehler in get_plan_list(): {e}")
+        _switch_to_gist("DB-Fehler beim Lesen des Plans")
+        return storage_get_plan()
     finally:
         db.close()
 
@@ -479,6 +554,10 @@ def save_plan_db(plan_rows):
             art = row[2] if len(row) > 2 else ''
             db.add(PlanEntry(datum=datum, messdiener_text=mess, art_uhrzeit=art))
         db.commit()
+    except Exception as e:
+        logger.error(f"DB-Fehler in save_plan_db(): {e}")
+        _switch_to_gist("DB-Fehler beim Speichern des Plans")
+        storage_save_plan(plan_rows)
     finally:
         db.close()
 
